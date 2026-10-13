@@ -1,0 +1,40 @@
+# Client-provided final runtime base. Use an immutable tag or digest.
+ARG MCP_BASE_IMAGE=alpine:3.21
+ARG MCP_SOURCE_IMAGE=pega-docker.downloads.pega.com/platformservices/infinity-rules-skills-mcp:latest
+
+# The released image is used only as an artifact source.
+FROM ${MCP_SOURCE_IMAGE} AS mcp-source
+
+# The final image is built from the client's approved base image.
+FROM ${MCP_BASE_IMAGE}
+
+ENV PEGA_SKILLS_PATH=/opt/infinity-skills \
+    SERVER_PORT=8090 \
+    PEGA_WRITE_ENABLED=true
+
+USER root
+
+# The final base must provide Java 17, a package manager, a compatible POSIX
+# shell, and CA certificates. This default uses Alpine; adapt this setup block
+# if the client-approved base uses a different package manager.
+RUN apk add --no-cache curl && \
+    addgroup -g 1001 mcp && \
+    adduser -u 1001 -G mcp -H -D -s /bin/false mcp
+
+WORKDIR /opt/mcp
+
+COPY --from=mcp-source /opt/mcp/infinity-rules-mcp.jar /opt/mcp/infinity-rules-mcp.jar
+COPY --from=mcp-source /opt/infinity-skills/ /opt/infinity-skills/
+
+RUN chown -R mcp:mcp /opt/mcp /opt/infinity-skills
+
+USER mcp
+EXPOSE 8090
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -sf -X POST http://localhost:8090/mcp \
+        -H "Content-Type: application/json" \
+        -H "Accept: text/event-stream, application/json" \
+        -d '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"healthcheck","version":"1.0"}}}' || exit 1
+
+ENTRYPOINT ["java", "-Xmx512m", "-jar", "/opt/mcp/infinity-rules-mcp.jar", "--server.port=8090"]

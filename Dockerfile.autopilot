@@ -1,0 +1,59 @@
+# Client-provided final runtime base. Use an immutable tag or digest.
+ARG AUTOPILOT_BASE_IMAGE=python:3.13.13-slim
+ARG AUTOPILOT_SOURCE_IMAGE=pega-docker.downloads.pega.com/platformservices/autopilot-service:latest
+
+# The released image is used only as an artifact source.
+FROM ${AUTOPILOT_SOURCE_IMAGE} AS autopilot-source
+
+# The final image is built from the client's approved base image.
+FROM ${AUTOPILOT_BASE_IMAGE}
+
+ENV PYTHONUNBUFFERED=1 \
+    ENABLE_EVALUATION_API=true
+
+USER root
+
+# The final base must provide the required Python runtime, pip, apt-get, and a
+# compatible POSIX shell. Some locked packages require a temporary native build
+# toolchain during installation.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        cargo \
+        cmake \
+        curl \
+        libffi-dev \
+        libssl-dev \
+        rustc \
+        unzip && \
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /lean/prometheus/metrics && \
+    useradd --create-home --home-dir /lean --shell /bin/sh leanusr
+
+# Reinstall dependencies on the final base. Do not copy site-packages from the
+# Pega image because native modules can depend on its libc and Python runtime.
+COPY --from=autopilot-source /lean/constraints.txt /lean/constraints.txt
+RUN pip install --no-cache-dir -r /lean/constraints.txt && \
+    apt-get purge -y \
+        build-essential \
+        cargo \
+        cmake \
+        libffi-dev \
+        libssl-dev \
+        rustc && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/* /root/.cache
+
+COPY --from=autopilot-source /lean/main /lean/main
+COPY --from=autopilot-source /lean/autopilotstorage /lean/autopilotstorage
+COPY --from=autopilot-source /lean/autopilots_v2 /lean/autopilots_v2
+COPY --from=autopilot-source /lean/entrypoint.sh /lean/entrypoint.sh
+
+RUN chmod 0555 /lean/entrypoint.sh && \
+    chown -R leanusr:leanusr /lean && \
+    rm -rf /tmp/* /var/tmp/*
+
+EXPOSE 8080
+USER leanusr
+WORKDIR /lean
+ENTRYPOINT ["/bin/sh", "/lean/entrypoint.sh"]
